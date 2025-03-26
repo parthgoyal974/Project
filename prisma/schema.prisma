@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "cockroachdb"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  name      String
+  password  String
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+  code      String?   @default("")
+  language  String?   @default("javascript")
+
+  @@map("sessions")
+}
+
