@@ -27,9 +27,15 @@ interface CodeEditorProps {
 export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isRunning }: CodeEditorProps) {
   const [language, setLanguage] = useState("javascript")
   const [code, setCode] = useState("// Start coding here\n\n")
-  const [isApplyingChanges, setIsApplyingChanges] = useState(false)
   const editorRef = useRef<any>(null)
   const monacoRef = useRef<any>(null)
+  const isApplyingChanges = useRef(false)
+  const codeRef = useRef(code)
+
+  // Keep codeRef updated
+  useEffect(() => {
+    codeRef.current = code
+  }, [code])
 
   // Configure Monaco before mounting
   const configureEditor = (monaco: any) => {
@@ -50,7 +56,6 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
       noSyntaxValidation: false,
     })
 
-    // Add type definitions for better IntelliSense
     monaco.languages.typescript.javascriptDefaults.addExtraLib(`
       declare var console: {
         log(...args: any[]): void;
@@ -58,8 +63,6 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
         warn(...args: any[]): void;
         info(...args: any[]): void;
       }
-      declare function setTimeout(callback: () => void, ms: number): number;
-      declare function clearTimeout(timeoutId: number): void;
     `, 'ts:globals.d.ts')
   }
 
@@ -68,9 +71,9 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
     editorRef.current = editor
     monacoRef.current = monaco
 
-    // Set up change listener
+    // Set up change listener for real-time collaboration
     editor.onDidChangeModelContent((event: any) => {
-      if (isApplyingChanges || !socket) return
+      if (isApplyingChanges.current) return
 
       const model = editor.getModel()
       const changes = event.changes.map((change: any) => ({
@@ -83,42 +86,49 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
         text: change.text
       }))
 
-      socket.emit("code_delta", {
+      // Emit changes to other clients
+      socket?.emit("code_delta", {
         sessionId,
         changes,
         version: model.getVersionId(),
         language
       })
 
-      if (onCodeChange) {
-        onCodeChange(editor.getValue())
-      }
+      // Update local state
+      const newValue = editor.getValue()
+      setCode(newValue)
+      onCodeChange?.(newValue)
     })
   }
 
   // Handle incoming code changes
   useEffect(() => {
-    if (!socket || !editorRef.current) return
+    if (!socket) return
 
     const handleCodeDelta = ({ changes, version }: any) => {
-      const model = editorRef.current.getModel()
-      if (!model) return
+      if (!editorRef.current) return
 
-      setIsApplyingChanges(true)
+      const model = editorRef.current.getModel()
+      if (!model || model.getVersionId() >= version) return
+
+      isApplyingChanges.current = true
       try {
-        if (model.getVersionId() < version) {
-          editorRef.current.executeEdits(null, changes.map((change: any) => ({
-            range: new monacoRef.current.Range(
-              change.range.startLineNumber,
-              change.range.startColumn,
-              change.range.endLineNumber,
-              change.range.endColumn
-            ),
-            text: change.text
-          })))
-        }
+        editorRef.current.executeEdits(null, changes.map((change: any) => ({
+          range: new monacoRef.current.Range(
+            change.range.startLineNumber,
+            change.range.startColumn,
+            change.range.endLineNumber,
+            change.range.endColumn
+          ),
+          text: change.text
+        })))
+        
+        // Update local state without triggering onChange
+        const newValue = editorRef.current.getValue()
+        setCode(newValue)
+        onCodeChange?.(newValue)
       } finally {
-        setIsApplyingChanges(false)
+        isApplyingChanges.current = false
       }
     }
 
@@ -134,13 +144,11 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
       socket.off("code_delta", handleCodeDelta)
       socket.off("language_change", handleLanguageChange)
     }
-  }, [socket, language, sessionId])
+  }, [socket, onCodeChange])
 
   const handleLanguageChange = (value: string) => {
     setLanguage(value)
-    if (socket) {
-      socket.emit("language_change", { sessionId, language: value })
-    }
+    socket?.emit("language_change", { sessionId, language: value })
   }
 
   return (
@@ -179,7 +187,6 @@ export default function CodeEditor({ sessionId, socket, onCodeChange, onRun, isR
         theme="vs-dark"
         language={language}
         value={code}
-        onChange={(value) => setCode(value || "")}
         beforeMount={configureEditor}
         onMount={handleEditorMount}
         options={{
